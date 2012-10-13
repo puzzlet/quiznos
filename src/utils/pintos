@@ -503,9 +503,9 @@ EOF
 	    print BOCHSRC "com1: enabled=1, mode=$mode, dev=/dev/stdout\n";
 	}
 	if ($vga eq 'none') {
-    print BOCHSRC "display_library: nogui\n";
+	    print BOCHSRC "display_library: nogui\n";
     } else {
-    print BOCHSRC "display_library: sdl\n";
+	    print BOCHSRC "display_library: sdl\n";
     }
     } else {
 	print BOCHSRC "display_library: term\n";
