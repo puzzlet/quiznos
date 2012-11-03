@@ -24,14 +24,22 @@
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 #define BITMAP_CHUNK_SIZE 32
-_Static_assert(sizeof(unsigned long) * 8 == BITMAP_CHUNK_SIZE, "sizeof(unsigned long) * 8 != BITMAP_CHUNK_SIZE");
+_Static_assert(sizeof(unsigned long) * 8 == BITMAP_CHUNK_SIZE,
+        "sizeof(unsigned long) * 8 != BITMAP_CHUNK_SIZE");
 #define BITMAP_SIZE ((PRI_MAX + BITMAP_CHUNK_SIZE) / BITMAP_CHUNK_SIZE)
-static struct _prio_array
+static struct prio_array
   {
     int nr_active;                      /* Number of tasks. */
     unsigned long bitmap[BITMAP_SIZE];
     struct list queue[PRI_MAX + 1];
-  } prio_array;
+  };
+
+struct _runqueue
+  {
+    struct prio_array *active;
+    struct prio_array *expired;
+    struct prio_array arrays[2];
+  } runqueue;
 
 static struct list sleep_list;
 
@@ -62,7 +70,6 @@ static long long kernel_ticks;  /* # of timer ticks in kernel threads. */
 static long long user_ticks;    /* # of timer ticks in user programs. */
 
 /* Scheduling. */
-#define TIME_SLICE 4            /* # of timer ticks to give each thread. */
 static unsigned thread_ticks;   /* # of timer ticks since last yield. */
 
 /* If false (default), use round-robin scheduler.
@@ -104,10 +111,17 @@ thread_init (void)
   list_init (&sleep_list);
   list_init (&all_list);
 
-  int i;
-  prio_array.nr_active = 0;
-  for (i = PRI_MIN; i < PRI_MAX; ++i) list_init (&(prio_array.queue[i]));
-  for (i = 0; i < BITMAP_SIZE; ++i) prio_array.bitmap[i] = 0;
+  int i, k;
+  for (k = 0; k < 2; ++k)
+    {
+      runqueue.arrays[k].nr_active = 0;
+      for (i = PRI_MIN; i < PRI_MAX; ++i)
+        list_init (&(runqueue.arrays[k].queue[i]));
+      for (i = 0; i < BITMAP_SIZE; ++i)
+        runqueue.arrays[k].bitmap[i] = 0;
+    }
+  runqueue.active = &(runqueue.arrays[0]);
+  runqueue.expired = &(runqueue.arrays[1]);
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
@@ -157,13 +171,16 @@ thread_tick (void)
       if (ticks >= t->sleep_timeout)
         {
           ASSERT (&t->elem == list_pop_front (&sleep_list));
-          thread_push (t);
+          thread_push (t, false);
         }
     }
 
   /* Enforce preemption. */
-  if (++thread_ticks >= TIME_SLICE)
+  if (++thread_ticks >= t->priority + 5)
+  {
     intr_yield_on_return ();
+    thread_ticks = 0;
+  }
 }
 
 /* Prints thread statistics. */
@@ -272,7 +289,7 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  thread_push (t);
+  thread_push (t, false);
   t->status = THREAD_READY;
   intr_set_level (old_level);
 }
@@ -343,7 +360,7 @@ thread_yield (void)
 
   old_level = intr_disable ();
   if (cur != idle_thread) 
-    thread_push(cur);
+    thread_push(cur, false);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -381,16 +398,17 @@ thread_sleep (int64_t ticks)
 }
 
 void
-thread_push (struct thread *t)
+thread_push (struct thread *t, bool expired)
 {
   ASSERT (is_thread (t));
   ASSERT (t != idle_thread);
   int priority = t->priority;
+  struct prio_array *prio = expired ? runqueue.expired : runqueue.active;
   ASSERT (PRI_MIN <= priority && priority <= PRI_MAX);
-  list_push_back (&(prio_array.queue[priority]), &t->elem);
-  prio_array.bitmap[priority / BITMAP_CHUNK_SIZE] |=
+  list_push_back (&(prio->queue[priority]), &t->elem);
+  prio->bitmap[priority / BITMAP_CHUNK_SIZE] |=
       (1L << (priority % BITMAP_CHUNK_SIZE));
-  ++prio_array.nr_active;
+  ++prio->nr_active;
 }
 
 /* Invoke function 'func' on all threads, passing along 'aux.
@@ -564,26 +582,28 @@ alloc_frame (struct thread *t, size_t size)
 static struct thread *
 next_thread_to_run (void) 
 {
-  if (! prio_array.nr_active)
-    return idle_thread;
-  else
+  if (! runqueue.active->nr_active)
     {
-      int i, k;
-      for (k = BITMAP_SIZE - 1; k >= 0; --k)
-        if (prio_array.bitmap[k]) break;
-      ASSERT (k >= 0);
-      for (i = BITMAP_CHUNK_SIZE - 1; i >= 0; --i)
-        if (prio_array.bitmap[k] & (1L << i)) break;
-      ASSERT (i >= 0);
-      struct thread *t = list_entry (
-              list_pop_front (&(prio_array.queue[k * BITMAP_SIZE + i])),
-              struct thread, elem);
-      if (list_empty (&(prio_array.queue[k * BITMAP_SIZE + i])))
-        prio_array.bitmap[k] &= ~(1L << i);
-      --prio_array.nr_active;
-      return t;
+      if (! runqueue.expired->nr_active)
+        return idle_thread;
+      struct prio_array *tmp = runqueue.expired;
+      runqueue.expired = runqueue.active;
+      runqueue.active = tmp;
     }
-  ASSERT (0);
+  int i, k;
+  for (k = BITMAP_SIZE - 1; k >= 0; --k)
+    if (runqueue.active->bitmap[k]) break;
+  ASSERT (k >= 0);
+  for (i = BITMAP_CHUNK_SIZE - 1; i >= 0; --i)
+    if (runqueue.active->bitmap[k] & (1L << i)) break;
+  ASSERT (i >= 0);
+  struct thread *t = list_entry (
+          list_pop_front (&(runqueue.active->queue[k * BITMAP_SIZE + i])),
+          struct thread, elem);
+  if (list_empty (&(runqueue.active->queue[k * BITMAP_SIZE + i])))
+    runqueue.active->bitmap[k] &= ~(1L << i);
+  --runqueue.active->nr_active;
+  return t;
 }
 
 /* Completes a thread switch by activating the new thread's page
