@@ -131,7 +131,7 @@ process_activate (void)
      interrupts. */
   tss_update ();
 }
-
+
 /* We load ELF binaries.  The following definitions are taken
    from the ELF specification, [ELF1], more-or-less verbatim.  */
 
@@ -206,7 +206,7 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
    and its initial stack pointer into *ESP.
    Returns true if successful, false otherwise. */
 bool
-load (const char *file_name, void (**eip) (void), void **esp) 
+load (const char *cmdline, void (**eip) (void), void **esp)
 {
   struct thread *t = thread_current ();
   struct Elf32_Ehdr ehdr;
@@ -214,18 +214,28 @@ load (const char *file_name, void (**eip) (void), void **esp)
   off_t file_ofs;
   bool success = false;
   int i;
+  char *iter, *token;
+  char buffer[2048];
+  int argc;
+  char *rargv[128] = {NULL, };  /* reversed argv */
+  const int n = strlen(cmdline) + 1;
 
   /* Allocate and activate page directories. */
   t->pagedir = pagedir_create ();
   if (t->pagedir == NULL) 
     goto done;
+
   process_activate ();
 
+  ASSERT (n < 2048);
+  strlcpy (buffer, cmdline, n);
+  token = strtok_r (buffer, " ", &iter);
+
   /* Open executable file. */
-  file = filesys_open (file_name);
-  if (file == NULL) 
+  file = filesys_open (token);
+  if (file == NULL)
     {
-      printf ("load: %s: open failed\n", file_name);
+      printf ("load: %s: open failed\n", token);
       goto done; 
     }
 
@@ -238,7 +248,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
       || ehdr.e_phentsize != sizeof (struct Elf32_Phdr)
       || ehdr.e_phnum > 1024) 
     {
-      printf ("load: %s: error loading executable\n", file_name);
+      printf ("load: %s: error loading executable\n", token);
       goto done; 
     }
 
@@ -305,6 +315,47 @@ load (const char *file_name, void (**eip) (void), void **esp)
   if (!setup_stack (esp))
     goto done;
 
+  strlcpy (buffer, cmdline, n);
+  argc = 0;
+  iter = buffer + n;
+  while (iter > buffer)
+    {
+      token = strrchr(buffer, ' ');
+      if (0 == token)
+        break;
+      *esp = (void*)(((char*)*esp) - ((iter - token) - 1));
+      strlcpy((char*)*esp, token + 1, iter - token);
+      *token = '\0';
+      iter = token;
+      rargv[argc] = (char*)*esp;
+      argc++;
+    }
+  if (iter > buffer)
+    {
+      *esp = (void*)(((char*)*esp) - ((iter - buffer) + 1));
+      strlcpy((char*)*esp, buffer, iter - buffer + 1);
+      rargv[argc] = (char*)*esp;
+      argc++;
+    }
+  while (((unsigned int)*esp) % 4)
+    {
+      *esp = (void*)(((char*)*esp) - 1);
+      *((char*)*esp) = '\0';
+    }
+  *esp = (void*)(((char**)*esp) - 1);
+  *((char**)*esp) = NULL;
+  for (i = 0; i < argc; i++)
+    {
+      *esp = (void*)(((char**)*esp) - 1);
+      *((char**)*esp) = rargv[i];
+    }
+  *esp = (void*)(((char**)*esp) - 1);
+  *((char***)*esp) = ((char**)*esp) + 1;
+  *esp = (void*)(((int*)*esp) - 1);
+  *((int*)*esp) = argc;
+  *esp = (void*)(((int*)*esp) - 1);
+  *((void**)*esp) = NULL;
+
   /* Start address. */
   *eip = (void (*) (void)) ehdr.e_entry;
 
@@ -315,7 +366,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
   file_close (file);
   return success;
 }
-
+
 /* load() helpers. */
 
 static bool install_page (void *upage, void *kpage, bool writable);
