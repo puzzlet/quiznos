@@ -20,7 +20,8 @@
         ({                                                               \
           int retval;                                                    \
           asm volatile                                                   \
-            ("pushl %[arg0]; pushl %[number]; int $0x30; addl $8, %%esp" \
+            ("movl %[arg0], %%eax; movl %[number], %%ebx; "              \
+             "pushl %%eax; pushl %%ebx; int $0x30; addl $8, %%esp"       \
                : "=a" (retval)                                           \
                : [number] "i" (NUMBER),                                  \
                  [arg0] "g" (ARG0)                                       \
@@ -34,8 +35,9 @@
         ({                                                      \
           int retval;                                           \
           asm volatile                                          \
-            ("pushl %[arg1]; pushl %[arg0]; "                   \
-             "pushl %[number]; int $0x30; addl $12, %%esp"      \
+            ("movl %[arg1], %%eax; movl %[arg0], %%ebx; "       \
+             "movl %[number], %%ecx; pushl %%eax; pushl %%ebx; "\
+             "pushl %%ecx; int $0x30; addl $12, %%esp"          \
                : "=a" (retval)                                  \
                : [number] "i" (NUMBER),                         \
                  [arg0] "g" (ARG0),                             \
@@ -50,8 +52,10 @@
         ({                                                      \
           int retval;                                           \
           asm volatile                                          \
-            ("pushl %[arg2]; pushl %[arg1]; pushl %[arg0]; "    \
-             "pushl %[number]; int $0x30; addl $16, %%esp"      \
+            ("movl %[arg2], %%eax; movl %[arg1], %%ebx; "       \
+             "movl %[arg0], %%ecx; movl %[number], %%edx; "     \
+             "pushl %%eax; pushl %%ebx; pushl %%ecx; "          \
+             "pushl %%edx; int $0x30; addl $16, %%esp"          \
                : "=a" (retval)                                  \
                : [number] "i" (NUMBER),                         \
                  [arg0] "g" (ARG0),                             \
